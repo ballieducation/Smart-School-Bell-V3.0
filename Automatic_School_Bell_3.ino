@@ -926,14 +926,36 @@ void screenDashboard() {
   getBellStatus(curBell, nextBell, countdown);
 
 if (curBell >= 0)
-  snprintf(line0, sizeof(line0),
-           "Current Bell:%2d %c",
-           curBell + 1,
-           getBellSymbolChar(curBell));
-else
-  snprintf(line0, sizeof(line0), "Current Bell: --");
+//  snprintf(line0, sizeof(line0),"Current Bell:%2d %c",curBell + 1,getBellSymbolChar(curBell));
+{
+    uint8_t t = bellType[curBell];
+    int periodNumber = 0;
 
+    // Calculate period number exactly like the Matrix logic does
+    for (int i = 0; i <= curBell; i++) {
+        if (bellType[i] == BELL_PERIOD) {
+            periodNumber++;
+        }
+    }
+
+    if (t == BELL_PRAYER) {
+        snprintf(line0, sizeof(line0), "Current: PRAYER [P]");
+    } else if (t == BELL_RECESS) {
+        snprintf(line0, sizeof(line0), "Current: RECESS [R]");
+    } else if (t == BELL_END) {
+        snprintf(line0, sizeof(line0), "Current: SCHOOL OFF[E]");
+    } else {
+        // This matches the 1, 2, 3... shown on your Matrix
+        snprintf(line0, sizeof(line0), "Current: PERIOD %d", periodNumber);
+    }
+} else {
+    snprintf(line0, sizeof(line0), "Current: --");
+}
 lcdPrintRow(1, line0);
+//else
+  //snprintf(line0, sizeof(line0), "Current Bell: --");
+
+//lcdPrintRow(1, line0);
 
 
 
@@ -1479,7 +1501,7 @@ void screenSelfTest() {
   static bool trackStarted = false;
   static unsigned long trackStartTime = 0;
 
-  if (subStep <= 14) {
+  if (subStep <= 17) {
 
     char buf[20];
     snprintf(buf, sizeof(buf), "PLAYING: %02d.mp3", subStep);
@@ -1595,256 +1617,169 @@ bool bothPressed(uint8_t p1, uint8_t p2)
 }
 
 ///////////////////////////////////////////////////
-void screenExamTimer()
-{
+///////////////////////////////////////////////////
+void updateExamMatrixPattern(uint32_t left, uint32_t total) {
+  matrix.clearDisplay(0);
+  
+  // ਸਮੇਂ ਦੇ ਹਿਸਾਬ ਨਾਲ ਉਚਾਈ (0 ਤੋਂ 8) ਕੱਢੋ
+  int height = map(left, 0, total, 0, 8);
+  
+  // 8 ਵਰਟੀਕਲ ਬਾਰਾਂ ਬਣਾਉਣ ਲਈ ਲੂਪ
+  for (int col = 0; col < 8; col++) {
+    for (int row = 0; row < height; row++) {
+      // ਹੇਠਾਂ ਤੋਂ ਉੱਪਰ ਵੱਲ ਬਾਰਾਂ ਭਰੋ
+      matrix.setLed(0, 7 - row, col, true); 
+    }
+  }
+}
+
+void screenExamTimer() {
   static uint8_t step = 0;
-  // 0 = edit start HH
-  // 1 = edit start MM
-  // 2 = edit duration HH
-  // 3 = edit duration MM
-  // 4 = confirm screen
+  static uint8_t lastStep = 255;
+  static unsigned long lastMatrixUpdate = 0;
 
-  if (screenChanged)
-  {
-    examStartH = rtc.getHours();
-    examStartM = rtc.getMinutes();
+  // --- 1. LCD ਦੀ ਪਹਿਲੀ ਲਾਈਨ (ਹਮੇਸ਼ਾ ਚੱਲਦੀ ਘੜੀ) ---
+  char clockLine[21];
+  snprintf(clockLine, sizeof(clockLine), "%02d/%02d %02d:%02d:%02d", 
+           rtc.getDay(), rtc.getMonth(), rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
+  lcd.setCursor(0, 0);
+  lcd.print(clockLine);
 
-    examDurH = 3;   // default
-    examDurM = 0;
-
-    step = 0;
+  if (screenChanged) {
+    if (!examScheduled && !examRunning) {
+      examStartH = rtc.getHours();
+      examStartM = rtc.getMinutes();
+      examDurH = 3;   
+      examDurM = 0;
+      step = 0;
+    }
+    lastStep = 255;
     lcd.clear();
-    lcd.noBlink();
     screenChanged = false;
   }
 
-  /* ================= WAITING (scheduled) ================= */
-  if (examScheduled && !examRunning)
-  {
+  /* ================= WAITING (ਸਮਾਂ ਹੋਣ ਦੀ ਉਡੀਕ) ================= */
+  if (examScheduled && !examRunning) {
     uint32_t now = rtcToSeconds();
+    uint32_t startSec = (uint32_t)examStartH * 3600UL + (uint32_t)examStartM * 60UL;
 
-    uint32_t startSec =
-        (uint32_t)examStartH * 3600UL +
-        (uint32_t)examStartM * 60UL;
-
-    char line[21];
-
-    // Row 0 : date & time
-    snprintf(line, sizeof(line),
-             "%02d/%02d/%04d %02d:%02d:%02d",
-             rtc.getDay(),
-             rtc.getMonth(),
-             2000 + rtc.getYear(),
-             rtc.getHours(),
-             rtc.getMinutes(),
-             rtc.getSeconds());
-    lcdPrintRow(0, line);
-
-    // Row 1 : start time
-    snprintf(line, sizeof(line),
-             "START : %02d:%02d",
-             examStartH, examStartM);
-    lcdPrintRow(1, line);
-
-    // Row 2 : end time
-    uint32_t end = startSec + examDurationSec;
-    snprintf(line, sizeof(line),
-             "END   : %02d:%02d",
-             (end / 3600UL) % 24,
-             (end % 3600UL) / 60);
-    lcdPrintRow(2, line);
-
-    // Row 3
+    lcdPrintRow(1, "STATUS: WAITING...");
+    char startLine[21];
+    snprintf(startLine, sizeof(startLine), "START AT: %02d:%02d", examStartH, examStartM);
+    lcdPrintRow(2, startLine);
     lcdPrintRow(3, "UP+SET = CANCEL");
 
-    // cancel waiting
-    if (bothPressed(BTN_UP, BTN_SET))
-    {
+    // ਸਿਰਫ਼ ਉਸੇ ਸੈਕਿੰਡ 'ਤੇ ਸਟਾਰਟ ਹੋਵੇਗਾ ਜਦੋਂ ਸਮਾਂ ਮੈਚ ਕਰੇਗਾ
+    if (now == startSec && rtc.getSeconds() == 0) {
+      examScheduled = false;
+      examRunning = true;
+      examStartSec = now;
+      
+      digitalWrite(RELAY_PIN, LOW);   // ਘੰਟੀ ਚਾਲੂ
+      digitalWrite(BUZZER_PIN, HIGH);
+      mp3.playMp3Folder(15);          // Exam Start Punjabi Audio
+      delay(2000);                    // ਸਿਰਫ਼ ਸਟਾਰਟ ਅਲਰਟ ਲਈ ਛੋਟਾ ਡਿਲੇਅ
+      digitalWrite(RELAY_PIN, HIGH);  // ਘੰਟੀ ਬੰਦ
+      digitalWrite(BUZZER_PIN, LOW);
+      lcd.clear();
+    }
+
+    if (bothPressed(BTN_UP, BTN_SET)) {
       examScheduled = false;
       uiState = UI_MENU;
       screenChanged = true;
-      return;
     }
-
-    // start automatically
-    if (now >= startSec)
-    {
-      examScheduled = false;
-      examRunning   = true;
-      examStartSec  = startSec;
-
-      // start exam bell
-      digitalWrite(RELAY_PIN, HIGH);
-      digitalWrite(BUZZER_PIN, HIGH);
-      delay(1200);
-      digitalWrite(RELAY_PIN, LOW);
-      digitalWrite(BUZZER_PIN, LOW);
-    }
-
-    return;
+    return; 
   }
 
-  /* ================= RUNNING ================= */
-  if (examRunning)
-  {
+  /* ================= RUNNING (ਪ੍ਰੀਖਿਆ ਚੱਲ ਰਹੀ ਹੈ) ================= */
+  if (examRunning) {
     uint32_t now = rtcToSeconds();
     uint32_t elapsed = now - examStartSec;
 
-    if (elapsed >= examDurationSec)
-    {
+    if (elapsed >= examDurationSec) {
       examRunning = false;
-
-      digitalWrite(RELAY_PIN, HIGH);
-      digitalWrite(BUZZER_PIN, HIGH);
-      delay(1200);
       digitalWrite(RELAY_PIN, LOW);
+      digitalWrite(BUZZER_PIN, HIGH);
+      mp3.playMp3Folder(16);          // Exam Over Punjabi Audio
+      delay(3000); 
+      digitalWrite(RELAY_PIN, HIGH);
       digitalWrite(BUZZER_PIN, LOW);
-
       lcd.clear();
-      lcdPrintRow(1, "EXAM OVER");
-      lcdPrintRow(3, "UP+SET = EXIT");
+      showError("EXAM FINISHED", "TIME UP");
+      uiState = UI_DASHBOARD;
+      screenChanged = true;
       return;
+    }
+
+    // 8x8 ਮੈਟ੍ਰਿਕਸ ਪੈਟਰਨ ਅੱਪਡੇਟ (ਹਰ 1 ਸੈਕਿੰਡ ਬਾਅਦ)
+    if (millis() - lastMatrixUpdate > 1000) {
+      updateExamMatrixPattern(examDurationSec - elapsed, examDurationSec);
+      lastMatrixUpdate = millis();
     }
 
     uint32_t left = examDurationSec - elapsed;
-
-    char line[21];
-
-    // Row 0 : current date & time
-    snprintf(line, sizeof(line),
-             "%02d/%02d/%04d %02d:%02d:%02d",
-             rtc.getDay(),
-             rtc.getMonth(),
-             2000 + rtc.getYear(),
-             rtc.getHours(),
-             rtc.getMinutes(),
-             rtc.getSeconds());
-    lcdPrintRow(0, line);
-
-    // Row 1 : remaining
-    snprintf(line, sizeof(line),
-             "LEFT : %02lu:%02lu:%02lu",
-             left / 3600,
-             (left % 3600) / 60,
-             left % 60);
-    lcdPrintRow(1, line);
-
-    // Row 2 : end time
-    uint32_t endSec = examStartSec + examDurationSec;
-    snprintf(line, sizeof(line),
-             "END  : %02d:%02d",
-             (endSec / 3600UL) % 24,
-             (endSec % 3600UL) / 60);
-    lcdPrintRow(2, line);
-
-    // Row 3
+    char leftLine[21];
+    lcdPrintRow(1, "EXAM IN PROGRESS");
+    snprintf(leftLine, sizeof(leftLine), "TIME LEFT: %02lu:%02lu:%02lu", left/3600, (left%3600)/60, left%60);
+    lcdPrintRow(2, leftLine);
     lcdPrintRow(3, "UP+SET = STOP");
 
-    // stop only with UP + SET
-    if (bothPressed(BTN_UP, BTN_SET))
-    {
+    if (bothPressed(BTN_UP, BTN_SET)) {
       examRunning = false;
+      matrix.clearDisplay(0);
       uiState = UI_MENU;
       screenChanged = true;
     }
-
     return;
   }
 
-  /* ================= EDIT / CONFIRM ================= */
-
-  char line[21];
-
-  lcdPrintRow(0, "SET EXAM TIMER");
-
-  snprintf(line, sizeof(line),
-           "START %02d:%02d", examStartH, examStartM);
-  lcdPrintRow(1, line);
-
-  snprintf(line, sizeof(line),
-           "DUR   %02d:%02d", examDurH, examDurM);
-  lcdPrintRow(2, line);
-
-  if (step < 4)
-    lcdPrintRow(3, "SET=NEXT");
-  else
-    lcdPrintRow(3, "SET=START UP=BACK");
-
-  // cursor
-  if      (step == 0) lcd.setCursor(6,1);
-  else if (step == 1) lcd.setCursor(9,1);
-  else if (step == 2) lcd.setCursor(6,2);
-  else if (step == 3) lcd.setCursor(9,2);
-
-  // edit
-  if (readButton(BTN_UP, btnUp))
-  {
-    if      (step == 0 && examStartH < 23) examStartH++;
-    else if (step == 1 && examStartM < 59) examStartM++;
-    else if (step == 2 && examDurH   < 23) examDurH++;
-    else if (step == 3 && examDurM   < 59) examDurM++;
+  /* ================= EDIT / SETUP (ਸੈਟਿੰਗ ਮੋਡ) ================= */
+  if (step != lastStep) {
+    if (step < 4) lcdPrintRow(3, "SET=NEXT");
+    else lcdPrintRow(3, "SET=START  UP=BACK");
+    lastStep = step;
   }
 
-  if (readButton(BTN_DOWN, btnDown))
-  {
-    if      (step == 0 && examStartH > 0) examStartH--;
-    else if (step == 1 && examStartM > 0) examStartM--;
-    else if (step == 2 && examDurH   > 0) examDurH--;
-    else if (step == 3 && examDurM   > 0) examDurM--;
+  char sLine[21], dLine[21];
+  snprintf(sLine, sizeof(sLine), "SET START: %02d:%02d", examStartH, examStartM);
+  lcdPrintRow(1, sLine);
+  snprintf(dLine, sizeof(dLine), "SET DUR  : %02d:%02d", examDurH, examDurM);
+  lcdPrintRow(2, dLine);
+
+  lcd.blink();
+  if      (step == 0) lcd.setCursor(11, 1);
+  else if (step == 1) lcd.setCursor(14, 1);
+  else if (step == 2) lcd.setCursor(11, 2);
+  else if (step == 3) lcd.setCursor(14, 2);
+  else lcd.noBlink();
+
+  if (readButton(BTN_UP, btnUp)) {
+    if      (step == 0) examStartH = (examStartH + 1) % 24;
+    else if (step == 1) examStartM = (examStartM + 1) % 60;
+    else if (step == 2) examDurH = (examDurH + 1) % 24;
+    else if (step == 3) examDurM = (examDurM + 1) % 60;
+  }
+  if (readButton(BTN_DOWN, btnDown)) {
+    if      (step == 0) examStartH = (examStartH + 23) % 24;
+    else if (step == 1) examStartM = (examStartM + 59) % 60;
+    else if (step == 2) examDurH = (examDurH + 23) % 24;
+    else if (step == 3) examDurM = (examDurM + 59) % 60;
   }
 
-  /* ---------- confirm screen ---------- */
-  if (step == 4)
-  {
-    uint32_t startSec =
-        (uint32_t)examStartH * 3600UL +
-        (uint32_t)examStartM * 60UL;
-
-    uint32_t dur =
-        (uint32_t)examDurH * 3600UL +
-        (uint32_t)examDurM * 60UL;
-
-    uint32_t end = startSec + dur;
-
-    uint8_t eh = (end / 3600UL) % 24;
-    uint8_t em = (end % 3600UL) / 60;
-
-    snprintf(line, sizeof(line),
-             "END   %02d:%02d", eh, em);
-    lcdPrintRow(3, line);
-  }
-
-  /* ---------- buttons ---------- */
-  if (readButton(BTN_SET, btnSet))
-  {
-    if (step < 4)
-    {
-      step++;
-      return;
-    }
-
-    if (examDurH == 0 && examDurM == 0)
-    {
-      showError("INVALID", "DURATION");
-      step = 0;
-      return;
-    }
-
-    examDurationSec =
-        (uint32_t)examDurH * 3600UL +
-        (uint32_t)examDurM * 60UL;
-
-    // schedule exam (do NOT start now)
+  if (readButton(BTN_SET, btnSet)) {
+    if (step < 4) { step++; return; }
+    examDurationSec = (uint32_t)examDurH * 3600UL + (uint32_t)examDurM * 60UL;
     examScheduled = true;
-
     step = 0;
-  }
-
-  if (step == 4 && readButton(BTN_UP, btnUp))
-  {
-    step = 0;
+    lcd.clear();
+    lcd.noBlink();
   }
 }
+///////////////////////////////////////////////////
+///////////////////////////////////////////////////
+
+//////////////////////////////////////////////////
 
 
 
@@ -2202,8 +2137,64 @@ void screenAutoGenerateBells()
 /* ================= SETUP ================= */
 /* ================= SETUP ================= */
 /* ================= SETUP ================= */
-/* ================= SETUP ================= */
 void screenTriggerBell() {
+  static bool triggering = false;
+  static unsigned long lastFlash = 0;
+  static bool flashState = false;
+
+  if (screenChanged) {
+    lcd.clear();
+    triggering = false;
+    screenChanged = false;
+  }
+
+  lcdPrintRow(0, "MANUAL TRIGGER");
+
+  if (!triggering) {
+    lcdPrintRow(1, "READY TO RING");
+    lcdPrintRow(3, "SET=START UP=BACK");
+
+    if (readButton(BTN_SET, btnSet)) {
+      mp3.stop(); 
+      delay(50); 
+      mp3.playMp3Folder(17); // Play Emergency Punjabi Script
+      delay(200); // Wait for DFPlayer to pull Busy Pin LOW
+      
+      digitalWrite(RELAY_PIN, LOW);   // Industrial Bell ON
+      digitalWrite(BUZZER_PIN, HIGH); // Internal Buzzer ON
+      
+      triggering = true;
+      lcd.clear();
+    }
+  } 
+  else {
+    lcdPrintRow(1, "!! EMERGENCY !!");
+    lcdPrintRow(2, "  ANNOUNCING  ");
+
+    // --- 8x8 Matrix Flashing Logic ---
+    if (millis() - lastFlash > 300) { // Flash every 300ms
+      lastFlash = millis();
+      flashState = !flashState;
+      if (flashState) drawChar8x8(10); // Show 'C'
+      else matrix.clearDisplay(0);    // Turn off
+    }
+
+    // --- Check if MP3 has finished ---
+    // digitalRead(MP3_BUSY_PIN) == HIGH means the sound has stopped
+    if (digitalRead(MP3_BUSY_PIN) == HIGH) {
+      digitalWrite(RELAY_PIN, HIGH);  // Bell OFF
+      digitalWrite(BUZZER_PIN, LOW);   // Buzzer OFF
+      
+      triggering = false;
+      matrix.clearDisplay(0);
+      showError("ALERT FINISHED", "");
+      uiState = UI_MENU;
+      screenChanged = true;
+    }
+  }
+}
+/* ================= SETUP ================= */
+void screenTriggerBell1() {
   static bool triggering = false;
   static unsigned long startTime = 0;
 
@@ -2231,8 +2222,13 @@ void screenTriggerBell() {
       digitalWrite(BUZZER_PIN, HIGH);
       
       // Start the MP3 (Track 1 is usually the standard bell)
-      mp3.play(1); 
-      
+      //mp3.play(1); 
+      mp3.play(17); 
+      //mp3.playMp3Folder(17);
+      delay(100); // Small pause for serial to finish
+      // Step 2: Show the Matrix icon
+      drawChar8x8(10); 
+      delay(100);
       startTime = millis();
       triggering = true;
       lcd.clear();
@@ -2636,9 +2632,6 @@ if (mp3Playing)
 }
 
 /* ================= LOOP ================= */
-/* ================= LOOP ================= */
-/* ================= LOOP ================= */
-/* ================= LOOP ================= */
-/* ================= LOOP ================= */
+
 
 
